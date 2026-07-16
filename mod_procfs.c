@@ -27,6 +27,7 @@
  */
 
 #include "conf.h"
+#include "privs.h"
 
 #if PROFTPD_VERSION_NUMBER < 0x0001030602
 # error "ProFTPD 1.3.6rc2 or later required"
@@ -43,6 +44,26 @@ static pool *procfs_pool = NULL;
 static int have_procfs = FALSE;
 
 static const char *trace_channel = "procfs";
+
+static int is_procfs_path(pool *p, const char *path) {
+  int res = FALSE;
+  char *abs_path;
+  size_t abs_pathlen;
+
+  abs_path = dir_abs_path(p, path, FALSE);
+  abs_pathlen = strlen(abs_path);
+
+  if (abs_pathlen >= 6 &&
+      strncmp(abs_path, "/proc/", 6) == 0) {
+    res = TRUE;
+
+  } else if (abs_pathlen == 5 &&
+             strcmp(abs_path, "/proc") == 0) {
+    res = TRUE;
+  }
+
+  return res;
+}
 
 /* Configuration handlers
  */
@@ -83,18 +104,59 @@ MODRET set_procfslog(cmd_rec *cmd) {
 /* Command handlers
  */
 
+MODRET procfs_pre_rnfr(cmd_rec *cmd) {
+  const char *path;
+
+  if (procfs_engine == FALSE) {
+    return PR_DECLINED(cmd);
+  }
+
+  if (cmd->argc < 2) {
+    return PR_DECLINED(cmd);
+  }
+
+  /* TODO: Add similar decoding, handling of spaces as done by mod_core. */
+
+  path = cmd->arg;
+  if (is_procfs_path(cmd->tmp_pool, path) == TRUE) {
+    pr_log_pri(PR_LOG_NOTICE, "%s %s denied by mod_procfs",
+      (char *) cmd->argv[0], path);
+    pr_response_add_err(R_550, _("%s: %s"), cmd->arg, strerror(ENOENT));
+
+    pr_cmd_set_errno(cmd, EPERM);
+    errno = EPERM;
+    return PR_ERROR(cmd);
+  }
+
+  return PR_DECLINED(cmd);
+}
+
 MODRET procfs_post_pass(cmd_rec *cmd) {
   config_rec *c;
 
   if (have_procfs == FALSE) {
+    procfs_engine = FALSE;
     return PR_DECLINED(cmd);
+  }
+
+  c = find_config(main_server->conf, CONF_PARAM, "ProcfsEngine", FALSE);
+  if (c != NULL) {
+    procfs_engine = *((int *) c->argv[0]);
   }
 
   if (procfs_engine == FALSE) {
     return PR_DECLINED(cmd);
   }
 
-  /* XXX Do we use FSIO callbacks, or command handlers? */
+  /* Check whether we are chrooted.  If so, then we need not do anything. */
+  if (session.chroot_path != NULL) {
+    if (strcmp(session.chroot_path, "/") != 0) {
+      pr_trace_msg(trace_channel, 3,
+        "session is chrooted to '%s', disabling mod_procfs",
+        session.chroot_path);
+      procfs_engine = FALSE;
+    }
+  }
 
   return PR_DECLINED(cmd);
 }
@@ -137,9 +199,8 @@ static void procfs_restart_ev(const void *event_data, void *user_data) {
 
 static int procfs_init(void) {
   struct stat st;
-  int res;
 
-  if (procfs_pool == NULL) {
+  if (procfs_pool != NULL) {
     destroy_pool(procfs_pool);
   }
 
@@ -156,18 +217,20 @@ static int procfs_init(void) {
    * is not present, then we need do nothing else.
    */
   if (lstat("/proc/", &st) == 0) {
-    pr_trace_msg(trace_channel, 19, "found /proc filesystem");
+    pr_log_debug(DEBUG10, MOD_PROCFS_VERSION ": found /proc/ filesystem");
 
     if (S_ISDIR(st.st_mode)) {
       have_procfs = TRUE;
 
+      /* TODO: Automatically set ProcfsEngine on in such cases? */
+
     } else {
-      pr_trace_msg(trace_channel, 19, "/proc is not a directory");
+      pr_log_debug(DEBUG10, MOD_PROCFS_VERSION ": /proc/ is not a directory");
     }
 
   } else {
-    pr_trace_msg(trace_channel, 9, "did not find /proc filesystem: %s",
-      strerror(errno));
+    pr_log_debug(DEBUG5, MOD_PROCFS_VERSION
+      ": did not find /proc filesystem: %s", strerror(errno));
   }
 
   return 0;
@@ -227,6 +290,8 @@ static conftable procfs_conftab[] = {
 };
 
 static cmdtable procfs_cmdtab[] = {
+  { PRE_CMD,		C_RNFR,	G_NONE,	procfs_pre_rnfr,	FALSE, FALSE },
+
   { POST_CMD,		C_PASS, G_NONE, procfs_post_pass,	FALSE, FALSE },
   { 0, NULL }
 };
