@@ -53,6 +53,13 @@ hiding of the <code>/proc</code> filesystem.  When enabled,
 <code>mod_procfs</code> works to prevent access to the <code>/proc</code>
 filesystem.
 
+<p>
+<b>Note</b> that <code>ProcfsEngine</code> is <em>automatically enabled</em>
+if the module detects, on startup, that the <code>/proc</code> filesystem
+is present.  If the <code>/proc</code> filesystem is not present on startup,
+then <code>ProcfsEngine</code> is automatically disabled.  Explicitly setting
+this directive overrides the automatic behavior.
+
 <hr>
 <h2><a name="ProcfsLog">ProcfsLog</a></h2>
 <strong>Syntax:</strong> ProcfsLog <em>file</em><br>

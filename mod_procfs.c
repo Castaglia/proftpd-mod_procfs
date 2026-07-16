@@ -101,10 +101,53 @@ MODRET set_procfslog(cmd_rec *cmd) {
   return PR_HANDLED(cmd);
 }
 
+static modret_t *handle_path(cmd_rec *cmd, const char *cmd_name,
+    const char *path) {
+  pr_trace_msg(trace_channel, 19, "checking path '%s' for %s", path, cmd_name);
+
+  if (is_procfs_path(cmd->tmp_pool, path) == TRUE) {
+    (void) pr_log_writefile(procfs_logfd, MOD_PROCFS_VERSION,
+      "%s %s denied by mod_procfs", cmd_name, path);
+    pr_log_pri(PR_LOG_NOTICE, "%s %s denied by mod_procfs", cmd_name, path);
+
+    pr_response_add_err(R_550, _("%s: %s"), path, strerror(ENOENT));
+
+    pr_cmd_set_errno(cmd, ENOENT);
+    errno = ENOENT;
+    return PR_ERROR(cmd);
+  }
+
+  return PR_DECLINED(cmd);
+}
+
 /* Command handlers
  */
 
-MODRET procfs_pre_rnfr(cmd_rec *cmd) {
+MODRET procfs_pre_mfmt(cmd_rec *cmd) {
+  const char *path, *ptr;
+
+  if (procfs_engine == FALSE) {
+    return PR_DECLINED(cmd);
+  }
+
+  if (cmd->argc < 3) {
+    return PR_DECLINED(cmd);
+  }
+
+  /* The path can contain spaces.  Thus we need to use cmd->arg, not cmd->argv,
+   * to find the path.  But cmd->arg contains the facts as well.  Thus we
+   * find the FIRST space in cmd->arg; the path is everything past that space.
+   */
+  ptr = strchr(cmd->arg, ' ');
+  if (ptr == NULL) {
+    return PR_DECLINED(cmd);
+  }
+
+  path = ptr + 1;
+  return handle_path(cmd, cmd->argv[0], path);
+}
+
+MODRET procfs_pre_path(cmd_rec *cmd) {
   const char *path;
 
   if (procfs_engine == FALSE) {
@@ -118,14 +161,89 @@ MODRET procfs_pre_rnfr(cmd_rec *cmd) {
   /* TODO: Add similar decoding, handling of spaces as done by mod_core. */
 
   path = cmd->arg;
-  if (is_procfs_path(cmd->tmp_pool, path) == TRUE) {
-    pr_log_pri(PR_LOG_NOTICE, "%s %s denied by mod_procfs",
-      (char *) cmd->argv[0], path);
-    pr_response_add_err(R_550, _("%s: %s"), cmd->arg, strerror(ENOENT));
+  return handle_path(cmd, cmd->argv[0], path);
+}
 
-    pr_cmd_set_errno(cmd, EPERM);
-    errno = EPERM;
-    return PR_ERROR(cmd);
+MODRET procfs_pre_site(cmd_rec *cmd) {
+  char *cmd_name, *path;
+
+  if (procfs_engine == FALSE) {
+    return PR_DECLINED(cmd);
+  }
+
+  if (cmd->argc < 3) {
+    return PR_DECLINED(cmd);
+  }
+
+  /* These are the SITE commands we know about:
+   *
+   *  SITE CHGRP <group> <path>
+   *  SITE CHMOD <mode> <path>
+   *
+   *  SITE MKDIR <path> (mod_site_misc)
+   *  SITE RMDIR <path> (mod_site_misc)
+   *  SITE SYMLINK <from> <to> (mod_site_misc)
+   *  SITE UTIME <timestamp> <path> (mod_site_misc)
+   *
+   *  SITE CPFR <path> (mod_copy)
+   *  SITE CPTO <path> (mod_copy)
+   *  SITE COPY <from> <to> (mod_copy)
+   */
+
+  if (strcmp(cmd->argv[1], "CHGRP") == 0 ||
+      strcmp(cmd->argv[1], "CHMOD") == 0 ||
+      strcmp(cmd->argv[1], "UTIME") == 0) {
+    register unsigned int i;
+    char *arg = "";
+
+    if (cmd->argc < 4) {
+      return PR_DECLINED(cmd);
+    }
+
+    /* Construct the path by concatenating all of the parameter after the
+     * operational data, separating them with spaces.
+     */
+
+    for (i = 3; i < cmd->argc; i++) {
+      arg = pstrcat(cmd->tmp_pool, arg, *arg ? " " : "", cmd->argv[i], NULL);
+    }
+
+    cmd_name = pstrcat(cmd->tmp_pool, cmd->argv[0], " ", cmd->argv[1], NULL);
+    path = arg;
+    return handle_path(cmd, cmd_name, path);
+
+  } else if (strcmp(cmd->argv[1], "CPFR") == 0 ||
+             strcmp(cmd->argv[1], "CPTO") == 0 ||
+             strcmp(cmd->argv[1], "MKDIR") == 0 ||
+             strcmp(cmd->argv[1], "RMDIR") == 0) {
+
+    cmd_name = pstrcat(cmd->tmp_pool, cmd->argv[0], " ", cmd->argv[1], NULL);
+    path = cmd->argv[2];
+    return handle_path(cmd, cmd_name, path);
+
+  } else if (strcmp(cmd->argv[1], "COPY") == 0 ||
+             strcmp(cmd->argv[1], "SYMLINK") == 0) {
+    char *from, *to;
+    modret_t *mr;
+
+    if (cmd->argc < 4) {
+      return PR_DECLINED(cmd);
+    }
+
+    cmd_name = pstrcat(cmd->tmp_pool, cmd->argv[0], " ", cmd->argv[1], NULL);
+    from = cmd->argv[2];
+    to = cmd->argv[3];
+
+    mr = handle_path(cmd, cmd_name, from);
+    if (MODRET_ISERROR(mr)) {
+      return mr;
+    }
+
+    return handle_path(cmd, cmd_name, to);
+
+  } else {
+    pr_trace_msg(trace_channel, 7,
+      "unknown/unsupported SITE '%s' command, ignoring", (char *) cmd->argv[1]);
   }
 
   return PR_DECLINED(cmd);
@@ -179,6 +297,9 @@ static void procfs_mod_unload_ev(const void *event_data, void *user_data) {
     destroy_pool(procfs_pool);
     procfs_pool = NULL;
   }
+
+  procfs_engine = FALSE;
+  have_procfs = FALSE;
 }
 #endif /* PR_SHARED_MODULE */
 
@@ -222,7 +343,8 @@ static int procfs_init(void) {
     if (S_ISDIR(st.st_mode)) {
       have_procfs = TRUE;
 
-      /* TODO: Automatically set ProcfsEngine on in such cases? */
+      /* Automatically enable ProcfsEngine on in such cases. */
+      procfs_engine = TRUE;
 
     } else {
       pr_log_debug(DEBUG10, MOD_PROCFS_VERSION ": /proc/ is not a directory");
@@ -241,7 +363,7 @@ static int procfs_sess_init(void) {
   const char *path;
   int res, xerrno;
 
-  c = find_config(main_server->conf, CONF_PARAM, "VRootLog", FALSE);
+  c = find_config(main_server->conf, CONF_PARAM, "ProcfsLog", FALSE);
   if (c == NULL) {
     return 0;
   }
@@ -290,7 +412,29 @@ static conftable procfs_conftab[] = {
 };
 
 static cmdtable procfs_cmdtab[] = {
-  { PRE_CMD,		C_RNFR,	G_NONE,	procfs_pre_rnfr,	FALSE, FALSE },
+  { PRE_CMD,		C_SITE,	G_NONE,	procfs_pre_site,	FALSE, FALSE },
+
+  { PRE_CMD,		C_APPE,	G_NONE,	procfs_pre_path,	FALSE, FALSE },
+  { PRE_CMD,		C_CWD,	G_NONE,	procfs_pre_path,	FALSE, FALSE },
+  { PRE_CMD,		C_XCWD,	G_NONE,	procfs_pre_path,	FALSE, FALSE },
+  { PRE_CMD,		C_DELE,	G_NONE,	procfs_pre_path,	FALSE, FALSE },
+  { PRE_CMD,		C_LIST,	G_NONE,	procfs_pre_path,	FALSE, FALSE },
+  { PRE_CMD,		C_MDTM,	G_NONE,	procfs_pre_path,	FALSE, FALSE },
+  { PRE_CMD,		C_MFF,	G_NONE,	procfs_pre_mfmt,	FALSE, FALSE },
+  { PRE_CMD,		C_MFMT,	G_NONE,	procfs_pre_mfmt,	FALSE, FALSE },
+  { PRE_CMD,		C_MKD,	G_NONE,	procfs_pre_path,	FALSE, FALSE },
+  { PRE_CMD,		C_XMKD,	G_NONE,	procfs_pre_path,	FALSE, FALSE },
+  { PRE_CMD,		C_MLSD,	G_NONE,	procfs_pre_path,	FALSE, FALSE },
+  { PRE_CMD,		C_MLST,	G_NONE,	procfs_pre_path,	FALSE, FALSE },
+  { PRE_CMD,		C_NLST,	G_NONE,	procfs_pre_path,	FALSE, FALSE },
+  { PRE_CMD,		C_RETR,	G_NONE,	procfs_pre_path,	FALSE, FALSE },
+  { PRE_CMD,		C_RMD,	G_NONE,	procfs_pre_path,	FALSE, FALSE },
+  { PRE_CMD,		C_XRMD,	G_NONE,	procfs_pre_path,	FALSE, FALSE },
+  { PRE_CMD,		C_RNFR,	G_NONE,	procfs_pre_path,	FALSE, FALSE },
+  { PRE_CMD,		C_RNTO,	G_NONE,	procfs_pre_path,	FALSE, FALSE },
+  { PRE_CMD,		C_SIZE,	G_NONE,	procfs_pre_path,	FALSE, FALSE },
+  { PRE_CMD,		C_STAT,	G_NONE,	procfs_pre_path,	FALSE, FALSE },
+  { PRE_CMD,		C_STOR,	G_NONE,	procfs_pre_path,	FALSE, FALSE },
 
   { POST_CMD,		C_PASS, G_NONE, procfs_post_pass,	FALSE, FALSE },
   { 0, NULL }
