@@ -12,6 +12,6 @@ Synopsis
 --------
 
 The `mod_procfs` module for ProFTPD affects the visibility and use of the
-`/proc` filesystem directory that is commonly used.
+`/proc` filesystem directory that is commonly available.
 
 See the [mod_procfs.html](https://htmlpreview.github.io/?https://github.com/Castaglia/proftpd-mod_procfs/blob/main/mod_procfs.html) documentation for more details.
