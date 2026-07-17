@@ -51,7 +51,8 @@ questions, concerns, or suggestions regarding this module.
 The <code>ProcfsEngine</code> directive enables or disables the module's
 hiding of the <code>/proc</code> filesystem.  When enabled,
 <code>mod_procfs</code> works to prevent access to the <code>/proc</code>
-filesystem.
+filesystem, returning "No such file or directory" errors for such access
+attempts.
 
 <p>
 <b>Note</b> that <code>ProcfsEngine</code> is <em>automatically enabled</em>
