@@ -119,15 +119,17 @@ your existing server:
 <h2><a name="Usage">Usage</a></h2>
 
 <p>
-The <code>mod_procfs</code> module works by using the ProFTPD FSIO API to
-intercept all <code>stat(2)</code> and <code>lstat(2)</code> system calls;
-if the paths being checked reference the <code>/proc</code> filesystem,
-those system calls will fail with a "No such file or directory" error.
+The <code>mod_procfs</code> module works by using the ProFTPD command dispatch
+system to intercept all commands/requests that use paths; if the paths
+being used reference the <code>/proc</code> filesystem, those commands will
+fail with a "No such file or directory" error.
 
 <p>
 Example configuration:
 <pre>
   &lt;IfModule mod_procfs.c&gt;
+    # This is not required; the module automatically determines when it is
+    # needed.
     ProcfsEngine on
     ProcfsLog /var/log/proftpd/procfs.log
   &lt;/IfModule&gt;
@@ -150,7 +152,7 @@ Thus for trace logging, to aid in debugging, you would use the following in
 your <code>proftpd.conf</code>:
 <pre>
   TraceLog /path/to/proftpd-trace.log
-  Trace fsio:20 procfs:20
+  Trace command:10 response:10 procfs:20
 </pre>
 This trace logging can generate large files; it is intended for debugging
 use only, and should be removed from any production configuration.
