@@ -1480,7 +1480,7 @@ sub procfs_sftp_rename {
 
       ($err_code, $err_name) = $sftp->error();
 
-      my $expected = 'SSH_FX_PERMISSION_DENIED';
+      $expected = 'SSH_FX_PERMISSION_DENIED';
       $self->assert($expected eq $err_name,
         test_msg("Expected error name '$expected', got '$err_name'"));
 
@@ -2128,7 +2128,7 @@ sub procfs_sftp_symlink {
 
       ($err_code, $err_name) = $sftp->error();
 
-      my $expected = 'SSH_FX_PERMISSION_DENIED';
+      $expected = 'SSH_FX_PERMISSION_DENIED';
       $self->assert($expected eq $err_name,
         test_msg("Expected error name '$expected', got '$err_name'"));
 
