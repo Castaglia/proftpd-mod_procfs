@@ -452,7 +452,7 @@ sub procfs_chrooted_rootfs {
       my $resp_code = $client->response_code();
       my $resp_msg = $client->response_msg();
 
-      my $expected = 550;
+      my $expected = 450;
       $self->assert($expected == $resp_code,
         test_msg("Expected response code $expected, got $resp_code"));
 
@@ -468,7 +468,7 @@ sub procfs_chrooted_rootfs {
       $resp_code = $client->response_code();
       $resp_msg = $client->response_msg();
 
-      $expected = 550;
+      $expected = 450;
       $self->assert($expected == $resp_code,
         test_msg("Expected response code $expected, got $resp_code"));
 
@@ -988,7 +988,6 @@ sub procfs_list_rejected {
       },
 
       'mod_procfs.c' => {
-        ProcfsEngine => 'on',
         ProcfsLog => $setup->{log_file},
       },
     },
@@ -1026,7 +1025,7 @@ sub procfs_list_rejected {
       my $resp_code = $client->response_code();
       my $resp_msg = $client->response_msg();
 
-      my $expected = 550;
+      my $expected = 450;
       $self->assert($expected == $resp_code,
         test_msg("Expected response code $expected, got $resp_code"));
 
@@ -1042,7 +1041,7 @@ sub procfs_list_rejected {
       $resp_code = $client->response_code();
       $resp_msg = $client->response_msg();
 
-      $expected = 550;
+      $expected = 450;
       $self->assert($expected == $resp_code,
         test_msg("Expected response code $expected, got $resp_code"));
 
@@ -1597,7 +1596,6 @@ sub procfs_mlst_rejected {
       },
 
       'mod_procfs.c' => {
-        ProcfsEngine => 'on',
         ProcfsLog => $setup->{log_file},
       },
     },
@@ -1639,8 +1637,8 @@ sub procfs_mlst_rejected {
       $self->assert($expected == $resp_code,
         test_msg("Expected response code $expected, got $resp_code"));
 
-      $expected = "/proc: No such file or directory";
-      $self->assert($expected eq $resp_msg,
+      $expected = '(No such file or directory|cannot be listed)';
+      $self->assert(qr/$expected/, $resp_msg,
         test_msg("Expected response message '$expected', got '$resp_msg'"));
 
       eval { $client->mlst('/proc/') };
@@ -1655,8 +1653,8 @@ sub procfs_mlst_rejected {
       $self->assert($expected == $resp_code,
         test_msg("Expected response code $expected, got $resp_code"));
 
-      $expected = "/proc/: No such file or directory";
-      $self->assert($expected eq $resp_msg,
+      $expected = '(No such file or directory|cannot be listed)';
+      $self->assert(qr/$expected/, $resp_msg,
         test_msg("Expected response message '$expected', got '$resp_msg'"));
 
       $client->quit();
@@ -1707,7 +1705,6 @@ sub procfs_nlst_rejected {
       },
 
       'mod_procfs.c' => {
-        ProcfsEngine => 'on',
         ProcfsLog => $setup->{log_file},
       },
     },
@@ -1745,7 +1742,7 @@ sub procfs_nlst_rejected {
       my $resp_code = $client->response_code();
       my $resp_msg = $client->response_msg();
 
-      my $expected = 550;
+      my $expected = 450;
       $self->assert($expected == $resp_code,
         test_msg("Expected response code $expected, got $resp_code"));
 
@@ -1761,12 +1758,12 @@ sub procfs_nlst_rejected {
       $resp_code = $client->response_code();
       $resp_msg = $client->response_msg();
 
-      $expected = 550;
+      $expected = 450;
       $self->assert($expected == $resp_code,
         test_msg("Expected response code $expected, got $resp_code"));
 
-      $expected = "/proc/: No such file or directory";
-      $self->assert($expected eq $resp_msg,
+      $expected = '/proc(\/)?: No such file or directory';
+      $self->assert(qr/$expected/, $resp_msg,
         test_msg("Expected response message '$expected', got '$resp_msg'"));
 
       $client->quit();
@@ -2003,7 +2000,24 @@ sub procfs_rnto_rejected {
   my $tmpdir = $self->{tmpdir};
   my $setup = test_setup($tmpdir, 'procfs');
 
-  my $test_file = File::Spec->rel2abs("/proc/test.txt");
+  my $src_file = File::Spec->rel2abs("$tmpdir/src.txt");
+  if (open(my $fh, "> $src_file")) {
+    print $fh "Hello, World!\n";
+    unless (close($fh)) {
+      die("Can't write $src_file: $!");
+    }
+
+  } else {
+    die("Can't open $src_file: $!");
+  }
+
+  if ($< == 0) {
+    unless (chown($setup->{uid}, $setup->{gid}, $src_file)) {
+      die("Can't set owner of $src_file to $setup->{uid}/$setup->{gid}: $!");
+    }
+  }
+
+  my $dst_file = File::Spec->rel2abs("/proc/test.txt");
 
   my $config = {
     PidFile => $setup->{pid_file},
@@ -2022,7 +2036,6 @@ sub procfs_rnto_rejected {
       },
 
       'mod_procfs.c' => {
-        ProcfsEngine => 'on',
         ProcfsLog => $setup->{log_file},
       },
     },
@@ -2052,7 +2065,8 @@ sub procfs_rnto_rejected {
       my $client = ProFTPD::TestSuite::FTP->new('127.0.0.1', $port);
       $client->login($setup->{user}, $setup->{passwd});
 
-      eval { $client->rnto($test_file) };
+      $client->rnfr($src_file);
+      eval { $client->rnto($dst_file) };
       unless ($@) {
         die("RNTO succeeded unexpectedly");
       }
@@ -2066,7 +2080,7 @@ sub procfs_rnto_rejected {
       $self->assert($expected == $resp_code,
         test_msg("Expected response code $expected, got $resp_code"));
 
-      $expected = "$test_file: No such file or directory";
+      $expected = "$dst_file: No such file or directory";
       $self->assert($expected eq $resp_msg,
         test_msg("Expected response message '$expected', got '$resp_msg'"));
     };
@@ -2145,6 +2159,7 @@ sub procfs_size_rejected {
 
       my $client = ProFTPD::TestSuite::FTP->new('127.0.0.1', $port);
       $client->login($setup->{user}, $setup->{passwd});
+      $client->type('binary');
 
       eval { $client->size('/proc/test.txt') };
       unless ($@) {
@@ -2209,7 +2224,6 @@ sub procfs_stat_rejected {
       },
 
       'mod_procfs.c' => {
-        ProcfsEngine => 'on',
         ProcfsLog => $setup->{log_file},
       },
     },
@@ -2248,7 +2262,7 @@ sub procfs_stat_rejected {
       my $resp_msg = $client->response_msg();
       $client->quit();
 
-      my $expected = 550;
+      my $expected = 450;
       $self->assert($expected == $resp_code,
         test_msg("Expected response code $expected, got $resp_code"));
 
@@ -2581,7 +2595,6 @@ sub procfs_site_mkdir_rejected {
       },
 
       'mod_procfs.c' => {
-        ProcfsEngine => 'on',
         ProcfsLog => $setup->{log_file},
       },
     },
@@ -2624,8 +2637,8 @@ sub procfs_site_mkdir_rejected {
       $self->assert($expected == $resp_code,
         test_msg("Expected response code $expected, got $resp_code"));
 
-      $expected = "/proc/test.d: No such file or directory";
-      $self->assert($expected eq $resp_msg,
+      $expected = '(No such file or directory|Read-only file system)';
+      $self->assert(qr/$expected/, $resp_msg,
         test_msg("Expected response message '$expected', got '$resp_msg'"));
     };
     if ($@) {
@@ -2674,7 +2687,6 @@ sub procfs_site_rmdir_rejected {
       },
 
       'mod_procfs.c' => {
-        ProcfsEngine => 'on',
         ProcfsLog => $setup->{log_file},
       },
     },
@@ -2717,8 +2729,8 @@ sub procfs_site_rmdir_rejected {
       $self->assert($expected == $resp_code,
         test_msg("Expected response code $expected, got $resp_code"));
 
-      $expected = "/proc: No such file or directory";
-      $self->assert($expected eq $resp_msg,
+      $expected = 'No such file or directory';
+      $self->assert(qr/$expected/, $resp_msg,
         test_msg("Expected response message '$expected', got '$resp_msg'"));
     };
     if ($@) {
@@ -2767,7 +2779,6 @@ sub procfs_site_symlink_rejected {
       },
 
       'mod_procfs.c' => {
-        ProcfsEngine => 'on',
         ProcfsLog => $setup->{log_file},
       },
     },
@@ -2809,8 +2820,8 @@ sub procfs_site_symlink_rejected {
       $self->assert($expected == $resp_code,
         test_msg("Expected response code $expected, got $resp_code"));
 
-      $expected = "/proc/from.txt: No such file or directory";
-      $self->assert($expected eq $resp_msg,
+      $expected = 'No such file or directory';
+      $self->assert(qr/$expected/, $resp_msg,
         test_msg("Expected response message '$expected', got '$resp_msg'"));
 
       eval { $client->site('SYMLINK', 'from.txt', '/proc/to.txt') };
@@ -2825,8 +2836,8 @@ sub procfs_site_symlink_rejected {
       $self->assert($expected == $resp_code,
         test_msg("Expected response code $expected, got $resp_code"));
 
-      $expected = "/proc/to.txt: No such file or directory";
-      $self->assert($expected eq $resp_msg,
+      $expected = 'No such file or directory';
+      $self->assert(qr/$expected/, $resp_msg,
         test_msg("Expected response message '$expected', got '$resp_msg'"));
 
       $client->quit();
@@ -2877,7 +2888,6 @@ sub procfs_site_utime_rejected {
       },
 
       'mod_procfs.c' => {
-        ProcfsEngine => 'on',
         ProcfsLog => $setup->{log_file},
       },
     },
@@ -2920,8 +2930,8 @@ sub procfs_site_utime_rejected {
       $self->assert($expected == $resp_code,
         test_msg("Expected response code $expected, got $resp_code"));
 
-      $expected = "/proc/test.txt: No such file or directory";
-      $self->assert($expected eq $resp_msg,
+      $expected = 'No such file or directory';
+      $self->assert(qr/$expected/, $resp_msg,
         test_msg("Expected response message '$expected', got '$resp_msg'"));
     };
     if ($@) {
@@ -3046,6 +3056,25 @@ sub procfs_site_cpto_rejected {
   my $tmpdir = $self->{tmpdir};
   my $setup = test_setup($tmpdir, 'procfs');
 
+  my $src_file = File::Spec->rel2abs("$tmpdir/src.txt");
+  if (open(my $fh, "> $src_file")) {
+    print $fh "Hello, World!\n";
+    unless (close($fh)) {
+      die("Can't write $src_file: $!");
+    }
+
+  } else {
+    die("Can't open $src_file: $!");
+  }
+
+  if ($< == 0) {
+    unless (chown($setup->{uid}, $setup->{gid}, $src_file)) {
+      die("Can't set owner of $src_file to $setup->{uid}/$setup->{gid}: $!");
+    }
+  }
+
+  my $dst_file = '/proc/test.txt';
+
   my $config = {
     PidFile => $setup->{pid_file},
     ScoreboardFile => $setup->{scoreboard_file},
@@ -3063,7 +3092,6 @@ sub procfs_site_cpto_rejected {
       },
 
       'mod_procfs.c' => {
-        ProcfsEngine => 'on',
         ProcfsLog => $setup->{log_file},
       },
     },
@@ -3093,7 +3121,8 @@ sub procfs_site_cpto_rejected {
       my $client = ProFTPD::TestSuite::FTP->new('127.0.0.1', $port);
       $client->login($setup->{user}, $setup->{passwd});
 
-      eval { $client->site('CPTO', '/proc/test.txt') };
+      $client->site('CPFR', $src_file);
+      eval { $client->site('CPTO', $dst_file) };
       unless ($@) {
         die("SITE CPTO succeeded unexpectedly");
       }
@@ -3106,8 +3135,8 @@ sub procfs_site_cpto_rejected {
       $self->assert($expected == $resp_code,
         test_msg("Expected response code $expected, got $resp_code"));
 
-      $expected = "/proc/test.txt: No such file or directory";
-      $self->assert($expected eq $resp_msg,
+      $expected = 'No such file or directory';
+      $self->assert(qr/$expected/, $resp_msg,
         test_msg("Expected response message '$expected', got '$resp_msg'"));
     };
     if ($@) {
@@ -3156,7 +3185,6 @@ sub procfs_site_copy_rejected {
       },
 
       'mod_procfs.c' => {
-        ProcfsEngine => 'on',
         ProcfsLog => $setup->{log_file},
       },
     },
@@ -3198,8 +3226,8 @@ sub procfs_site_copy_rejected {
       $self->assert($expected == $resp_code,
         test_msg("Expected response code $expected, got $resp_code"));
 
-      $expected = "/proc/from.txt: No such file or directory";
-      $self->assert($expected eq $resp_msg,
+      $expected = 'No such file or directory';
+      $self->assert(qr/$expected/, $resp_msg,
         test_msg("Expected response message '$expected', got '$resp_msg'"));
 
       eval { $client->site('COPY', 'from.txt', '/proc/to.txt') };
@@ -3214,8 +3242,8 @@ sub procfs_site_copy_rejected {
       $self->assert($expected == $resp_code,
         test_msg("Expected response code $expected, got $resp_code"));
 
-      $expected = "/proc/to.txt: No such file or directory";
-      $self->assert($expected eq $resp_msg,
+      $expected = 'No such file or directory';
+      $self->assert(qr/$expected/, $resp_msg,
         test_msg("Expected response message '$expected', got '$resp_msg'"));
 
       $client->quit();

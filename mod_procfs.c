@@ -33,7 +33,7 @@
 # error "ProFTPD 1.3.6rc2 or later required"
 #endif
 
-#define MOD_PROCFS_VERSION	"mod_procfs/0.1"
+#define MOD_PROCFS_VERSION	"mod_procfs/0.2"
 
 module procfs_module;
 
@@ -101,12 +101,24 @@ MODRET set_procfslog(cmd_rec *cmd) {
   return PR_HANDLED(cmd);
 }
 
+static const char *get_cmd_resp_code(cmd_rec *cmd) {
+  const char *resp_code = R_550;
+
+  if (pr_cmd_cmp(cmd, PR_CMD_LIST_ID) == 0 ||
+      pr_cmd_cmp(cmd, PR_CMD_NLST_ID) == 0 ||
+      pr_cmd_cmp(cmd, PR_CMD_STAT_ID) == 0) {
+    resp_code = R_450;
+  }
+
+  return resp_code;
+}
+
 static modret_t *handle_path(cmd_rec *cmd, const char *cmd_name,
     const char *path) {
   pr_trace_msg(trace_channel, 19, "checking path '%s' for %s", path, cmd_name);
 
   if (is_procfs_path(cmd->tmp_pool, path) == TRUE) {
-    const char *proto;
+    const char *proto, *resp_code;
 
     proto = pr_session_get_protocol(0);
 
@@ -116,7 +128,9 @@ static modret_t *handle_path(cmd_rec *cmd, const char *cmd_name,
       pr_netaddr_get_ipstr(session.c->remote_addr), proto);
     pr_log_pri(PR_LOG_NOTICE, "%s %s denied by mod_procfs", cmd_name, path);
 
-    pr_response_add_err(R_550, _("%s: %s"), path, strerror(ENOENT));
+    /* The response code to use depends on the command. */
+    resp_code = get_cmd_resp_code(cmd);
+    pr_response_add_err(resp_code, _("%s: %s"), path, strerror(ENOENT));
 
     pr_cmd_set_errno(cmd, ENOENT);
     errno = ENOENT;
