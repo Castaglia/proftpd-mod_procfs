@@ -29,6 +29,25 @@
 #include "conf.h"
 #include "privs.h"
 
+#if !defined(HAVE_MNTENT_H)
+/* Older ProFTPD versions did not check for the <mntent.h> header, so we
+ * will use heuristics to guess whether it is present.  Some platforms,
+ * such as Mac OSX, do not have this header.
+ *
+ * If/when I get access to BSD platforms, I can add heuristics to handle them
+ * appropriately in the future.
+ */
+# if defined(__GLIBC__)
+#   define HAVE_MNTENT_H 1
+# elif defined(LINUX)
+#   define HAVE_MNTENT_H 1
+# endif /* LINUX */
+#endif /* HAVE_MNTENT_H */
+
+#if defined(HAVE_MNTENT_H)
+# include <mntent.h>
+#endif /* HAVE_MNTENT_H */
+
 #if PROFTPD_VERSION_NUMBER < 0x0001030602
 # error "ProFTPD 1.3.6rc2 or later required"
 #endif
@@ -41,25 +60,142 @@ static int procfs_engine = FALSE;
 static int procfs_logfd = -1;
 static pool *procfs_pool = NULL;
 
-static int have_procfs = FALSE;
-
 static const char *trace_channel = "procfs";
 
+struct procfs_mount {
+  const char *path;
+  size_t path_len;
+};
+
+static array_header *procfs_mounts = NULL;
+
+static int get_procfs_mounts(pool *p) {
+#if defined(HAVE_MNTENT_H)
+  FILE *mountf = NULL;
+  struct mntent *mnt = NULL;
+
+  mountf = setmntent("/etc/mtab", "r");
+  if (mountf == NULL) {
+    int xerrno = errno;
+
+    pr_trace_msg(trace_channel, 1, "unable to read /etc/mtab: %s",
+      strerror(xerrno));
+    errno = xerrno;
+    return -1;
+  }
+
+  mnt = getmntent(mountf);
+  while (mnt != NULL) {
+    pr_signals_handle();
+
+    if (strcmp(mnt->mnt_type, "proc") == 0) {
+      struct procfs_mount *mount;
+      size_t path_len;
+
+      pr_log_debug(DEBUG0, MOD_PROCFS_VERSION
+        ": discovered procfs mounted at '%s'", mnt->mnt_dir);
+
+      mount = palloc(p, sizeof(struct procfs_mount));
+
+      /* If the mount point path does not end with a trailing slash, add it.
+       * We use this property when checking paths that reference this procfs
+       * mount point.
+       */
+      path_len = strlen(mnt->mnt_dir);
+      if (mnt->mnt_dir[path_len-1] != '/') {
+        mount->path = pstrcat(p, mnt->mnt_dir, "/", NULL);
+        mount->path_len = path_len + 1;
+
+      } else {
+        mount->path = pstrdup(p, mnt->mnt_dir);
+        mount->path_len = path_len;
+      }
+
+      if (procfs_mounts == NULL) {
+        procfs_mounts = make_array(p, 0, sizeof(struct procfs_mount *));
+      }
+
+      *((struct procfs_mount **) push_array(procfs_mounts)) = mount;
+    }
+
+    mnt = getmntent(mountf);
+  }
+
+  if (endmntent(mountf) != 1) {
+    pr_trace_msg(trace_channel, 1, "error closing /etc/mtab: %s",
+      strerror(errno));
+  }
+
+#else
+  struct stat st;
+
+  /* Check for the presence of the /proc filesystem on this host.  If it
+   * is not present, then we need do nothing else.
+   */
+  if (lstat("/proc/", &st) == 0) {
+    pr_log_debug(DEBUG10, MOD_PROCFS_VERSION ": found /proc/ filesystem");
+
+    if (S_ISDIR(st.st_mode)) {
+      struct procfs_mount *mount;
+
+      mount = palloc(p, sizeof(struct procfs_mount));
+      mount->path = pstrdup(p, "/proc/");
+      mount->path_len = 6;
+
+      procfs_mounts = make_array(p, 0, sizeof(struct procfs_mount *));
+      *((struct procfs_mount **) push_array(procfs_mounts)) = mount;
+
+    } else {
+      pr_log_debug(DEBUG10, MOD_PROCFS_VERSION ": /proc/ is not a directory");
+    }
+  }
+#endif /* HAVE_MNTENT_H */
+
+  if (procfs_mounts != NULL) {
+    /* Automatically enable ProcfsEngine on in such cases. */
+    procfs_engine = TRUE;
+
+  } else {
+    pr_log_debug(DEBUG5, MOD_PROCFS_VERSION
+      ": did not find /proc filesystem: %s", strerror(errno));
+  }
+
+  return 0;
+}
+
 static int is_procfs_path(pool *p, const char *path) {
+  register unsigned int i;
   int res = FALSE;
   char *abs_path;
   size_t abs_pathlen;
+  struct procfs_mount **mounts;
 
   abs_path = dir_abs_path(p, path, FALSE);
   abs_pathlen = strlen(abs_path);
 
-  if (abs_pathlen >= 6 &&
-      strncmp(abs_path, "/proc/", 6) == 0) {
-    res = TRUE;
+  mounts = procfs_mounts->elts;
+  for (i = 0; i < procfs_mounts->nelts; i++) {
+    struct procfs_mount *mount;
 
-  } else if (abs_pathlen == 5 &&
-             strcmp(abs_path, "/proc") == 0) {
-    res = TRUE;
+    pr_signals_handle();
+
+    mount = mounts[i];
+
+    pr_trace_msg(trace_channel, 19,
+      "checking path '%s' against procfs mount '%s'", abs_path, mount->path);
+
+    if (abs_pathlen >= mount->path_len &&
+        strncmp(abs_path, mount->path, mount->path_len) == 0) {
+      res = TRUE;
+
+    } else if (abs_pathlen == (mount->path_len - 1) &&
+               strncmp(abs_path, mount->path, mount->path_len - 1) == 0) {
+      res = TRUE;
+    }
+
+    if (res == TRUE) {
+      break;
+    }
   }
 
   return res;
@@ -324,7 +460,7 @@ MODRET procfs_sftp_pre_symlink(cmd_rec *cmd) {
 MODRET procfs_post_pass(cmd_rec *cmd) {
   config_rec *c;
 
-  if (have_procfs == FALSE) {
+  if (procfs_mounts == NULL) {
     procfs_engine = FALSE;
     return PR_DECLINED(cmd);
   }
@@ -368,10 +504,10 @@ static void procfs_mod_unload_ev(const void *event_data, void *user_data) {
   if (procfs_pool != NULL) {
     destroy_pool(procfs_pool);
     procfs_pool = NULL;
+    procfs_mounts = NULL;
   }
 
   procfs_engine = FALSE;
-  have_procfs = FALSE;
 }
 #endif /* PR_SHARED_MODULE */
 
@@ -387,12 +523,21 @@ static void procfs_restart_ev(const void *event_data, void *user_data) {
   pr_pool_tag(procfs_pool, MOD_PROCFS_VERSION);
 }
 
+static void procfs_shutdown_ev(const void *event_data, void *user_data) {
+  (void) close(procfs_logfd);
+  procfs_logfd = -1;
+
+  if (procfs_pool != NULL) {
+    destroy_pool(procfs_pool);
+    procfs_pool = NULL;
+    procfs_mounts = NULL;
+  }
+}
+
 /* Initialization functions
  */
 
 static int procfs_init(void) {
-  struct stat st;
-
   if (procfs_pool != NULL) {
     destroy_pool(procfs_pool);
   }
@@ -405,26 +550,11 @@ static int procfs_init(void) {
     NULL);
 #endif /* PR_SHARED_MODULE */
   pr_event_register(&procfs_module, "core.restart", procfs_restart_ev, NULL);
+  pr_event_register(&procfs_module, "core.shutdown", procfs_shutdown_ev, NULL);
 
-  /* Check for the presence of the /proc filesystem on this host.  If it
-   * is not present, then we need do nothing else.
-   */
-  if (lstat("/proc/", &st) == 0) {
-    pr_log_debug(DEBUG10, MOD_PROCFS_VERSION ": found /proc/ filesystem");
-
-    if (S_ISDIR(st.st_mode)) {
-      have_procfs = TRUE;
-
-      /* Automatically enable ProcfsEngine on in such cases. */
-      procfs_engine = TRUE;
-
-    } else {
-      pr_log_debug(DEBUG10, MOD_PROCFS_VERSION ": /proc/ is not a directory");
-    }
-
-  } else {
-    pr_log_debug(DEBUG5, MOD_PROCFS_VERSION
-      ": did not find /proc filesystem: %s", strerror(errno));
+  if (get_procfs_mounts(procfs_pool) < 0) {
+    pr_trace_msg(trace_channel, 1, "unable to discover procfs mounts: %s",
+      strerror(errno));
   }
 
   return 0;
