@@ -421,6 +421,42 @@ MODRET procfs_sftp_pre_path(cmd_rec *cmd) {
   return handle_path(cmd, cmd->argv[0], path);
 }
 
+MODRET procfs_sftp_pre_hardlink(cmd_rec *cmd) {
+  const char *src_path, *dst_path, *proto;
+  char *ptr;
+  modret_t *mr;
+
+  if (procfs_engine == FALSE) {
+    return PR_DECLINED(cmd);
+  }
+
+  proto = pr_session_get_protocol(0);
+  if (strcmp(proto, "sftp") != 0) {
+    return PR_DECLINED(cmd);
+  }
+
+  /* Unfortunately, mod_sftp currently does NOT break the two paths into
+   * the cmd->argv array; it only populates cmd->arg.
+   *
+   * In the future, if/when mod_sftp behavior changes, we can look at the
+   * cmd->argc to determine which style is being used by mod_sftp.
+   */
+  ptr = strchr(cmd->arg, ' ');
+  if (ptr == NULL) {
+    return PR_DECLINED(cmd);
+  }
+
+  src_path = pstrndup(cmd->tmp_pool, cmd->arg, ptr - cmd->arg);
+  dst_path = pstrdup(cmd->tmp_pool, ptr + 1);
+
+  mr = handle_path(cmd, cmd->argv[0], src_path);
+  if (MODRET_ISERROR(mr)) {
+    return mr;
+  }
+
+  return handle_path(cmd, cmd->argv[0], dst_path);
+}
+
 MODRET procfs_sftp_pre_symlink(cmd_rec *cmd) {
   const char *src_path, *dst_path, *proto;
   char *ptr;
@@ -640,6 +676,8 @@ static cmdtable procfs_cmdtab[] = {
   { PRE_CMD,		C_STOR,	G_NONE,	procfs_pre_path,	FALSE, FALSE },
 
   /* SFTP */
+  { PRE_CMD, "HARDLINK",	G_NONE, procfs_sftp_pre_hardlink, FALSE, FALSE },
+  { PRE_CMD, "LINK",		G_NONE, procfs_sftp_pre_hardlink, FALSE, FALSE },
   { PRE_CMD, "LSTAT",		G_NONE, procfs_sftp_pre_path, FALSE, FALSE },
   { PRE_CMD, "OPENDIR",		G_NONE, procfs_sftp_pre_path, FALSE, FALSE },
   { PRE_CMD, "READLINK",	G_NONE, procfs_sftp_pre_path, FALSE, FALSE },

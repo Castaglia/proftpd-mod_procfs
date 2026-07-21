@@ -84,6 +84,11 @@ my $TESTS = {
     test_class => [qw(forking)],
   },
 
+  procfs_sftp_ext_hardlink => {
+    order => ++$order,
+    test_class => [qw(forking)],
+  },
+
   # TODO
   # procfs_sftp_link
 };
@@ -2190,6 +2195,217 @@ sub procfs_sftp_symlink {
       close($fh);
       $self->assert($from_ok && $to_ok,
         test_msg("Did not see expected ProcfsLog messages"));
+
+    } else {
+      die("Can't read $setup->{log_file}: $!");
+    }
+  };
+  if ($@) {
+    $ex = $@;
+  }
+
+  test_cleanup($setup, $ex);
+}
+
+sub procfs_sftp_ext_hardlink {
+  my $self = shift;
+  my $tmpdir = $self->{tmpdir};
+  my $setup = test_setup($tmpdir, 'procfs');
+
+  my $rsa_host_key = File::Spec->rel2abs("$ENV{PROFTPD_TEST_DIR}/t/etc/modules/mod_sftp/ssh_host_rsa_key");
+  my $dsa_host_key = File::Spec->rel2abs("$ENV{PROFTPD_TEST_DIR}/t/etc/modules/mod_sftp/ssh_host_dsa_key");
+
+  my $rsa_priv_key = File::Spec->rel2abs("$ENV{PROFTPD_TEST_DIR}/t/etc/modules/mod_sftp/test_rsa_key");
+  my $rsa_pub_key = File::Spec->rel2abs("$ENV{PROFTPD_TEST_DIR}/t/etc/modules/mod_sftp/test_rsa_key.pub");
+  my $rsa_rfc4716_key = File::Spec->rel2abs("$ENV{PROFTPD_TEST_DIR}/t/etc/modules/mod_sftp/authorized_rsa_keys");
+
+  my $authorized_keys = File::Spec->rel2abs("$tmpdir/.authorized_keys");
+  unless (copy($rsa_rfc4716_key, $authorized_keys)) {
+    die("Can't copy $rsa_rfc4716_key to $authorized_keys: $!");
+  }
+
+  my $from_file = '/proc/src.txt';
+  my $to_file = '/proc/dst.txt';
+
+  # As Net::SSH2::SFTP (via libssh2) does not implement LINK, we'll use
+  # OpenSSH's sftp(1) and its "hardlink@openssh.com" extension.
+
+  my $batch_file = File::Spec->rel2abs("$tmpdir/sftp-batch.conf");
+  if (open(my $fh, "> $batch_file")) {
+    print $fh "ln $from_file $to_file\n";
+
+    unless (close($fh)) {
+      die("Can't write $batch_file: $!");
+    }
+
+  } else {
+    die("Can't open $batch_file: $!");
+  }
+
+  my $config = {
+    PidFile => $setup->{pid_file},
+    ScoreboardFile => $setup->{scoreboard_file},
+    SystemLog => $setup->{log_file},
+    TraceLog => $setup->{log_file},
+    Trace => 'procfs:20 sftp:20',
+
+    AuthUserFile => $setup->{auth_user_file},
+    AuthGroupFile => $setup->{auth_group_file},
+    AuthOrder => 'mod_auth_file.c',
+
+    IfModules => {
+      'mod_delay.c' => {
+        DelayEngine => 'off',
+      },
+
+      'mod_procfs.c' => {
+        ProcfsEngine => 'on',
+        ProcfsLog => $setup->{log_file},
+      },
+
+      'mod_sftp.c' => [
+        'SFTPEngine on',
+        "SFTPLog $setup->{log_file}",
+        "SFTPHostKey $rsa_host_key",
+        "SFTPHostKey $dsa_host_key",
+
+        "SFTPAuthorizedUserKeys file:~/.authorized_keys",
+      ],
+    },
+  };
+
+  my ($port, $config_user, $config_group) = config_write($setup->{config_file},
+    $config);
+
+  # Open pipes, for use between the parent and child processes.  Specifically,
+  # the child will indicate when it's done with its test by writing a message
+  # to the parent.
+  my ($rfh, $wfh);
+  unless (pipe($rfh, $wfh)) {
+    die("Can't open pipe: $!");
+  }
+
+  require Net::SSH2;
+
+  my $ex;
+
+  # Ignore SIGPIPE
+  local $SIG{PIPE} = sub { };
+
+  # Fork child
+  $self->handle_sigchld();
+  defined(my $pid = fork()) or die("Can't fork: $!");
+  if ($pid) {
+    eval {
+      # Allow for server startup
+      sleep(1);
+
+      my $sftp = 'sftp';
+
+      my @cmd = (
+        $sftp,
+        '-oBatchMode=yes',
+        '-oCheckHostIP=no',
+        '-oCompression=yes',
+        "-oPort=$port",
+        "-oIdentityFile=$rsa_priv_key",
+        '-oIdentitiesOnly=yes',
+        '-oPubkeyAuthentication=yes',
+        '-oStrictHostKeyChecking=no',
+        '-oUserKnownHostsFile=/dev/null',
+        '-vvv',
+        '-b',
+        $batch_file,
+        "$setup->{user}\@127.0.0.1",
+      );
+
+      my $sftp_rh = IO::Handle->new();
+      my $sftp_wh = IO::Handle->new();
+      my $sftp_eh = IO::Handle->new();
+
+      $sftp_wh->autoflush(1);
+
+      sleep(1);
+
+      local $SIG{CHLD} = 'DEFAULT';
+
+      # Make sure that the perms on the priv key are what OpenSSH wants
+      unless (chmod(0400, $rsa_priv_key)) {
+        die("Can't set perms on $rsa_priv_key to 0400: $!");
+      }
+
+      if ($ENV{TEST_VERBOSE}) {
+        print STDERR "Executing: ", join(' ', @cmd), "\n";
+      }
+
+      my $sftp_pid = open3($sftp_wh, $sftp_rh, $sftp_eh, @cmd);
+      waitpid($sftp_pid, 0);
+      my $exit_status = $?;
+
+      # Restore the perms on the priv key
+      unless (chmod(0644, $rsa_priv_key)) {
+        die("Can't set perms on $rsa_priv_key to 0644: $!");
+      }
+
+      my ($res, $errstr);
+      if ($exit_status >> 8 == 0) {
+        $errstr = join('', <$sftp_eh>);
+        $res = 0;
+
+      } else {
+        $errstr = join('', <$sftp_eh>);
+        if ($ENV{TEST_VERBOSE}) {
+          print STDERR "Stderr: $errstr\n";
+        }
+
+        $res = 1;
+      }
+
+      if ($res == 0) {
+        die("Hardlink $from_file on server succeeded unexpectedly");
+      }
+    };
+    if ($@) {
+      $ex = $@;
+    }
+
+    $wfh->print("done\n");
+    $wfh->flush();
+
+  } else {
+    eval { server_wait($setup->{config_file}, $rfh) };
+    if ($@) {
+      warn($@);
+      exit 1;
+    }
+
+    exit 0;
+  }
+
+  # Stop server
+  server_stop($setup->{pid_file});
+  $self->assert_child_ok($pid);
+
+  eval {
+    if (open(my $fh, "< $setup->{log_file}")) {
+      my $ok = 0;
+
+      while (my $line = <$fh>) {
+        chomp($line);
+
+        next unless $line =~ /mod_procfs\//;
+
+        if ($ENV{TEST_VERBOSE}) {
+          print STDERR "# $line\n";
+        }
+
+        if ($line =~ /HARDLINK $from_file denied by mod_procfs/) {
+          $ok = 1;
+        }
+      }
+
+      close($fh);
+      $self->assert($ok, test_msg("Did not see expected ProcfsLog messages"));
 
     } else {
       die("Can't read $setup->{log_file}: $!");
