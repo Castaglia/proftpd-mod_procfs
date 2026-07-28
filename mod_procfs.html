@@ -14,7 +14,7 @@
 
 <p>
 The <code>mod_procfs</code> module affects the visibility and usage of the
-<code>/proc</code> filesystem directory.
+<code>/proc</code> and <code>/sys</code> pseudo-filesystem directories.
 
 <p>
 This module is contained in the <code>mod_procfs</code> file for
@@ -49,17 +49,18 @@ questions, concerns, or suggestions regarding this module.
 
 <p>
 The <code>ProcfsEngine</code> directive enables or disables the module's
-hiding of the <code>/proc</code> filesystem.  When enabled,
-<code>mod_procfs</code> works to prevent access to the <code>/proc</code>
-filesystem, returning "No such file or directory" errors for such access
-attempts.
+hiding of the <code>/proc</code> and <code>/sys</code> filesystems.  When
+enabled, <code>mod_procfs</code> works to prevent access to the
+<code>/proc</code> and <code>/sys</code> pseudo-filesystems, returning
+"No such file or directory" errors for such access attempts.
 
 <p>
 <b>Note</b> that <code>ProcfsEngine</code> is <em>automatically enabled</em>
-if the module detects, on startup, that the <code>/proc</code> filesystem
-is present.  If the <code>/proc</code> filesystem is not present on startup,
-then <code>ProcfsEngine</code> is automatically disabled.  Explicitly setting
-this directive overrides the automatic behavior.
+if the module detects, on startup, that the <code>/proc</code> or
+<code>/sys</code> filesystems are present.  If the <code>/proc</code> and
+<code>/sys</code> filesystems are not present on startup, then
+<code>ProcfsEngine</code> is automatically disabled.  Explicitly setting this
+directive overrides the automatic behavior.
 
 <hr>
 <h2><a name="ProcfsLog">ProcfsLog</a></h2>
@@ -121,8 +122,8 @@ your existing server:
 <p>
 The <code>mod_procfs</code> module works by using the ProFTPD command dispatch
 system to intercept all commands/requests that use paths; if the paths
-being used reference the <code>/proc</code> filesystem, those commands will
-fail with a "No such file or directory" error.
+being used reference the <code>/proc</code> or <code>/sys</code> filesystems,
+those commands will fail with a "No such file or directory" error.
 
 <p>
 Example configuration:
