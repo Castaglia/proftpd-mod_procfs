@@ -52,7 +52,7 @@
 # error "ProFTPD 1.3.6rc2 or later required"
 #endif
 
-#define MOD_PROCFS_VERSION	"mod_procfs/0.3"
+#define MOD_PROCFS_VERSION	"mod_procfs/0.4"
 
 module procfs_module;
 
