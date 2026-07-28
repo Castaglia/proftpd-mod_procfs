@@ -675,6 +675,16 @@ static cmdtable procfs_cmdtab[] = {
   { PRE_CMD,		C_STAT,	G_NONE,	procfs_pre_path,	FALSE, FALSE },
   { PRE_CMD,		C_STOR,	G_NONE,	procfs_pre_path,	FALSE, FALSE },
 
+  /* mod_digest FTP commands */
+  { PRE_CMD,	"HASH",		G_NONE,	procfs_pre_path,	FALSE, FALSE },
+  { PRE_CMD,	"MD5",		G_NONE,	procfs_pre_path,	FALSE, FALSE },
+  { PRE_CMD,	"XCRC",		G_NONE,	procfs_pre_path,	FALSE, FALSE },
+  { PRE_CMD,	"XMD5",		G_NONE,	procfs_pre_path,	FALSE, FALSE },
+  { PRE_CMD,	"XSHA",		G_NONE,	procfs_pre_path,	FALSE, FALSE },
+  { PRE_CMD,	"XSHA1",	G_NONE,	procfs_pre_path,	FALSE, FALSE },
+  { PRE_CMD,	"XSHA256",	G_NONE,	procfs_pre_path,	FALSE, FALSE },
+  { PRE_CMD,	"XSHA512",	G_NONE,	procfs_pre_path,	FALSE, FALSE },
+
   /* SFTP */
   { PRE_CMD, "HARDLINK",	G_NONE, procfs_sftp_pre_hardlink, FALSE, FALSE },
   { PRE_CMD, "LINK",		G_NONE, procfs_sftp_pre_hardlink, FALSE, FALSE },

@@ -62,6 +62,11 @@ if (scalar(@ARGV) > 0) {
   my $order = 0;
 
   my $FEATURE_TESTS = {
+    't/modules/mod_procfs/digest.t' => {
+      order => ++$order,
+      test_class => [qw(mod_digest)],
+    },
+
     't/modules/mod_procfs/sftp.t' => {
       order => ++$order,
       test_class => [qw(mod_sftp)],
