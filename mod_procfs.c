@@ -65,6 +65,7 @@ static const char *trace_channel = "procfs";
 struct procfs_mount {
   const char *path;
   size_t path_len;
+  const char *type;
 };
 
 static array_header *procfs_mounts = NULL;
@@ -86,20 +87,28 @@ static int get_procfs_mounts(pool *p) {
 
   mnt = getmntent(mountf);
   while (mnt != NULL) {
+    struct procfs_mount *mount = NULL;
+    size_t path_len = 0;
+
     pr_signals_handle();
 
     if (strcmp(mnt->mnt_type, "proc") == 0) {
-      struct procfs_mount *mount;
-      size_t path_len;
-
       pr_log_debug(DEBUG0, MOD_PROCFS_VERSION
         ": discovered procfs mounted at '%s'", mnt->mnt_dir);
-
       mount = palloc(p, sizeof(struct procfs_mount));
+      mount->type = pstrdup(p, "procfs");
 
+    } else if (strcmp(mnt->mnt_type, "sysfs") == 0) {
+      pr_log_debug(DEBUG0, MOD_PROCFS_VERSION
+        ": discovered sysfs mounted at '%s'", mnt->mnt_dir);
+      mount = palloc(p, sizeof(struct procfs_mount));
+      mount->type = pstrdup(p, "sysfs");
+    }
+
+    if (mount != NULL) {
       /* If the mount point path does not end with a trailing slash, add it.
-       * We use this property when checking paths that reference this procfs
-       * mount point.
+       * We use this property when checking paths that reference this mount
+       * point.
        */
       path_len = strlen(mnt->mnt_dir);
       if (mnt->mnt_dir[path_len-1] != '/') {
@@ -163,7 +172,7 @@ static int get_procfs_mounts(pool *p) {
   return 0;
 }
 
-static int is_procfs_path(pool *p, const char *path) {
+static int is_blocked_path(pool *p, const char *path) {
   register unsigned int i;
   int res = FALSE;
   char *abs_path;
@@ -182,7 +191,8 @@ static int is_procfs_path(pool *p, const char *path) {
     mount = mounts[i];
 
     pr_trace_msg(trace_channel, 19,
-      "checking path '%s' against procfs mount '%s'", abs_path, mount->path);
+      "checking path '%s' against %s mount '%s'", abs_path, mount->type,
+      mount->path);
 
     if (abs_pathlen >= mount->path_len &&
         strncmp(abs_path, mount->path, mount->path_len) == 0) {
@@ -253,7 +263,7 @@ static modret_t *handle_path(cmd_rec *cmd, const char *cmd_name,
     const char *path) {
   pr_trace_msg(trace_channel, 19, "checking path '%s' for %s", path, cmd_name);
 
-  if (is_procfs_path(cmd->tmp_pool, path) == TRUE) {
+  if (is_blocked_path(cmd->tmp_pool, path) == TRUE) {
     const char *proto, *resp_code;
 
     proto = pr_session_get_protocol(0);
